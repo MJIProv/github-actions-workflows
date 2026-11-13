@@ -1,0 +1,25 @@
+; yendra-c.com - DNS records for the Cloudflare zone (YENDRA-C account)
+; Built 2026-11-13 from the records Squarespace publishes today, read through
+; public DNS (1.1.1.1 / 8.8.8.8). Import: Cloudflare > yendra-c.com > DNS >
+; Records > Import and Export > Import (BIND format).
+;
+; KEEP: Google Workspace mail. These three records must exist in Cloudflare
+; before the nameservers change, or mail stops.
+yendra-c.com.                      3600 IN MX  1 smtp.google.com.
+yendra-c.com.                      3600 IN TXT "v=spf1 include:_spf.google.com ~all"
+google._domainkey.yendra-c.com.    3600 IN TXT "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuetKV6WQqgFTCOIdXYpGstiBAYKGuqT74vuhKI5EkR9WzIfUKrBqH2kRcmJARObvGJ4JXAexdNy+FeUR5iD/nNBVoS+CMCYM/Bphv/u7xuUSbYzvxy0eP/FcvhBzHBYrKzpVQXGpMWYGM2xliV9ZCJ46n9jPZLFxZ6O4Lqn5SEUe715kgrUfbIfkicg3EQSkd" "sCV+MwOM2MRLm8FpRAQSUjP9Sxpg+WN0k/5DttUpYabk6RM6FVt5XCqW4EYLsYWypFDXzNyts3K2z+o+wLz3ZNJy8mgk8rfd6jPYhSEYYOQPWADQ481UlFZ4UbbOkLkz9e7wxYRnt11C3WbFqJfXQIDAQAB"
+;
+; ADD [PROPOSAL]: a DMARC policy. None is published today. p=none only
+; reports; it changes no delivery. Tighten to quarantine after a few weeks
+; of clean reports.
+_dmarc.yendra-c.com.               3600 IN TXT "v=DMARC1; p=none"
+;
+; WEBSITE: do NOT import the Squarespace records below. The site moves to
+; the Cloudflare Pages project `yendra-website`. Its records are created by
+; Pages > yendra-website > Custom domains > add yendra-c.com and
+; www.yendra-c.com, once that project exists in this account.
+;   (old) yendra-c.com.      A     198.49.23.144 / .145, 198.185.159.144 / .145
+;   (old) www.yendra-c.com.  CNAME ext-sq.squarespace.com.
+;
+; DROP: Squarespace-only record, meaningless off Squarespace.
+;   (old) _domainconnect.yendra-c.com. CNAME _domainconnect.domains.squarespace.com.
