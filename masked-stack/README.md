@@ -23,26 +23,25 @@ pip install --require-hashes -r requirements-all-platforms.txt
 
 ## Rebuilding a standalone archive
 
-The container that builds this is ephemeral — v1.0.0 was lost to exactly that. The toolkit
-ships as one archive plus a bootstrap. Two files, no repo, no network to unpack:
+Nothing here needs this; it exists because the toolkit predates the repo. If you want a
+single self-verifying file again — to carry it somewhere with no git — rebuild the archive
+from this tree:
 
 ```sh
-sh install.sh                     # verifies sha256, then extracts ./masked-stack/
-cd masked-stack && ./verify.sh
+tar czf masked-stack.tar.gz --sort=name --owner=0 --group=0 --numeric-owner \
+    --mtime='2026-11-13 00:00:00' --exclude='*.egg-info' --exclude='__pycache__' \
+    --exclude='*.pyc' --transform 's,^\./,masked-stack/,' .
+sha256sum masked-stack.tar.gz
 ```
 
-`install.sh` refuses to extract on a hash mismatch, and refuses to overwrite an existing
-`masked-stack/` unless `FORCE=1`. The expected digest lives in `install.sh`, which is the
-single hash authority. It is deliberately NOT repeated in these docs: the docs are inside
-the archive, so a digest written here could never match the archive containing it.
+Those flags make the result **byte-reproducible**: same tree in, same digest out, so a
+second person can rebuild and compare. Hand the digest over out of band (it cannot live
+inside the archive it describes — it would never match) and have the recipient check it
+before extracting.
 
-The archive is **byte-reproducible**:
-
-```sh
-tar czf out.tgz --sort=name --owner=0 --group=0 --numeric-owner \
-    --mtime='2026-10-10 00:00:00' --exclude='*.egg-info' --exclude='__pycache__' \
-    --exclude='*.pyc' --exclude='install.sh' --transform 's,^\./,masked-stack/,' .
-```
+The original bootstrap script is deliberately **not** committed: it hard-coded one
+archive's digest, which goes stale the moment anything here changes. `git` does that job
+now, and `verify.sh` is the integrity check.
 
 ## The pin
 

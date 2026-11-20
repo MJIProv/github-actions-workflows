@@ -53,7 +53,7 @@ Recommendation: hold.
 | Step 6 guard passed vacuously | "Cleaning up" the litter by building in a scratch dir holding only `pyproject.toml` removed the directories the bug needs. It passed *with the bug reintroduced*. Fixed by copying the whole tree. **A cleanup that touches a test's fixtures can invalidate it without failing it** |
 | One-sided tamper test | Extracted the *first* hash in contourpy's sorted block, not the wheel pip selects. The control case failed too, so it had no discriminating power. Replaced with `tamper_test.py` |
 | `--dry-run` validated nothing | First "verification" reported `Requirement already satisfied` and checked zero digests |
-| Circular hash | The archive's own digest was written into `README.md`/`MANIFEST.md`, which are *inside* the archive. Could never match. `install.sh` is now the sole hash authority |
+| Circular hash | The archive's own digest was written into `README.md`/`MANIFEST.md`, which are *inside* the archive. Could never match. The digest moved to the bootstrap, outside the archive; since the move to git neither is committed |
 | Build residue shipped | An earlier `pip wheel` left `masked_stack.egg-info/` in the first archive. `.gitignore` + `tar --exclude` now |
 | `-I` footgun in the demo | Docstring recommended `python3 -I`, which excludes user site-packages — what made matplotlib look broken mid-build (`python-dateutil` was in `/root/.local/...`) |
 | False repo scan | `gh api` writes a 404 body to **stdout**, so a non-empty-output test reported every repo as containing `requirements.txt`. Corrected to use exit codes: none of the six repos contains any `.py` file |
@@ -61,8 +61,9 @@ Recommendation: hold.
 
 ## Release bundle
 
-`install.sh` lives **outside** the archive and is the only place the expected digest
-appears. Writing the digest into any bundled file makes it self-referential.
+The bootstrap lived **outside** the archive and was the only place the expected digest
+appeared. Writing the digest into any bundled file makes it self-referential. Neither the
+bootstrap nor the archive is committed here -- see README.md.
 
 Tested each build: extract into a clean directory, run `./verify.sh` from the *extracted*
 copy, corrupt the archive by one byte (must refuse, exit 1), clobber guard, `FORCE=1`

@@ -20,7 +20,10 @@ REQ = Path(__file__).with_name("requirements-all-platforms.txt")
 PINS_FILE = Path(__file__).with_name("requirements.txt")
 # contourpy wheels are ~300 KB so all of them are cheap; numpy/scipy wheels are
 # 17-35 MB, so sample a NON-native platform to exercise digests never used locally.
-SAMPLE_SUBSTR = {"numpy": ["aarch64"], "scipy": ["aarch64"]}
+# Keep these substrings NARROW (one libc, not both). A bare "aarch64" also matches the
+# musllinux wheels, which takes the default run from 84 digests / 335 MB to 96 / 645 MB
+# and silently desyncs the coverage figure quoted in README.md. Measured, not guessed.
+SAMPLE_SUBSTR = {"numpy": ["manylinux_2_27_aarch64"], "scipy": ["manylinux2014_aarch64"]}
 
 
 def ctx():
