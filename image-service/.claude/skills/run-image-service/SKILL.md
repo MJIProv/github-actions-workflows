@@ -27,7 +27,7 @@ One command starts the server, drives it, and stops it. Exit code 0 means every 
 .claude/skills/run-image-service/smoke.sh
 ```
 
-It runs in about 3 seconds and prints 15 `PASS` lines then `ALL CHECKS PASSED`. What it does, in order: generates a real 640x480 PNG with node's zlib, writes a random `UPLOAD_TOKEN` to `.dev.vars`, starts `wrangler dev --local` in its own process group, polls `/health`, then:
+It runs in about 3 seconds and prints 20 `PASS` lines then `ALL CHECKS PASSED`. What it does, in order: generates a real 640x480 PNG with node's zlib, starts `wrangler dev --local` in its own process group with a random `UPLOAD_TOKEN` passed via `--var` and its local R2 state in a temp dir (`--persist-to`), polls `/health`, then:
 
 | check | expected |
 |---|---|
@@ -40,9 +40,13 @@ It runs in about 3 seconds and prints 15 `PASS` lines then `ALL CHECKS PASSED`. 
 | `?w=999` | 400 (width not on the ladder) |
 | SVG upload | 415 |
 | `/meta/:id` without / with token | 401 / 200 |
+| `?f=webp` (format only) | `image/webp`, still 640x480 |
+| `Range` header on the original | full 200, no `Content-Range` |
+| `HEAD` on a transform | 200, empty body |
+| weak ETag inside an `If-None-Match` list | 304 |
 | `DELETE /i/:id`, then `GET` | 200, then 404 |
 
-Port defaults to 8799: `PORT=8801 .claude/skills/run-image-service/smoke.sh`. Server log: `/tmp/image-service-dev.log`. Artifacts it leaves: `/tmp/image-service-test.png`, `/tmp/image-service-orig.png`, `/tmp/image-service-w256.webp`, `/tmp/image-service-thumb.jpg`. It deletes `.dev.vars` and `.wrangler` on exit.
+Port defaults to 8799: `PORT=8801 .claude/skills/run-image-service/smoke.sh`. Server log: `/tmp/image-service-dev.log`. Artifacts it leaves: `/tmp/image-service-test.png`, `/tmp/image-service-orig.png`, `/tmp/image-service-w256.webp`, `/tmp/image-service-thumb.jpg`. The temp state dir is deleted on exit. Your own `.dev.vars` and `.wrangler/` are never read, written or deleted (I tested that with sentinel files).
 
 To poke the server by hand, use the start/stop helper, then curl it:
 
@@ -50,7 +54,7 @@ To poke the server by hand, use the start/stop helper, then curl it:
 .claude/skills/run-image-service/serve.sh start      # prints {"ok":true}, token in /tmp/image-service.token
 TOKEN=$(cat /tmp/image-service.token)
 curl -s -o /dev/null -w '%{http_code}\n' -X POST --data-binary x -H "authorization: Bearer $TOKEN" http://localhost:8799/upload   # -> 415 (not an image)
-.claude/skills/run-image-service/serve.sh stop       # kills wrangler + workerd, removes .dev.vars and .wrangler
+.claude/skills/run-image-service/serve.sh stop       # kills wrangler + workerd, removes its temp state
 ```
 
 Do not start the server with a bare `setsid ... &` in your own shell: there `$!` is not the process-group leader, so a group kill misses it (I tried; it left `wrangler` and `workerd` running). `serve.sh` does it inside a script, where it works.
@@ -63,7 +67,7 @@ The handler is a plain `fetch(request, env)` export, so internals can be tested 
 npm test
 ```
 
-Expected: `# tests 24`, `# pass 24`, `# fail 0` in about half a second. Use this path for changes to routing, auth, validation or parameter parsing (`src/lib.ts`, `src/index.ts`).
+Expected: `# tests 34`, `# pass 34`, `# fail 0` in about half a second. Use this path for changes to routing, auth, validation or parameter parsing (`src/lib.ts`, `src/index.ts`).
 
 ## Build and static checks
 
@@ -78,7 +82,7 @@ npm run check            # typecheck + tests + bundle, exits 0
 ## Gotchas
 
 - **Local Images is the low-fidelity simulator.** `wrangler dev --local` supports `width`, `height`, `rotate` and `format` only (Cloudflare docs). Resize, WebP and JPEG output passed here; `fit` modes beyond what the thumb check shows, `quality` and AVIF output are not proven by the smoke test. Use `wrangler dev --remote` (needs a Cloudflare login, untested here) or a staging deploy for those.
-- **`.dev.vars` needs a token of at least 32 characters.** Shorter or missing means every write returns 503 by design (fails closed), not a bug.
+- **The upload token must be at least 32 characters.** `smoke.sh` and `serve.sh` pass one via `--var`. If you run `wrangler dev` yourself with a shorter or missing `UPLOAD_TOKEN` (from `.dev.vars` or `--var`), every write returns 503 by design (fails closed), not a bug.
 - **Kill the whole process group, not the `npx` PID.** `wrangler dev` spawns node and `workerd` children. My first version of `smoke.sh` killed only the wrapper and left `wrangler` and `workerd` running after every run. The script now starts the server with `setsid` and kills `-$PID`.
 - **`lsof -ti:PORT` returned nothing** in my check while a `workerd` process was still holding the port, so port-based killing did not work here. Use the process group.
 - **Egress proxy.** This container routes HTTPS through a proxy and wrangler prints `Proxy environment variables detected`. The script unsets the proxy variables and sets `NO_PROXY=localhost,127.0.0.1` for its curls. I did not test whether curl to localhost fails without that.

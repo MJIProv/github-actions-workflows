@@ -47,15 +47,16 @@ export const VARIANTS = {
 export type VariantName = keyof typeof VARIANTS;
 
 export const WIDTH_LADDER = [64, 128, 256, 320, 480, 640, 800, 1024, 1280, 1600, 1920, 2560] as const;
-export const OUT_FORMATS = ["auto", "webp", "avif", "jpeg", "png"] as const;
+export const OUT_FORMATS = ["auto", "webp", "avif", "jpeg", "png", "gif"] as const;
 export type OutFormat = (typeof OUT_FORMATS)[number];
 
 export interface TransformSpec {
   /** Stable text for ETag / logging, e.g. "card.webp". */
   tag: string;
-  width: number;
+  /** Absent for a format-only change: the pixel size is left alone. */
+  width?: number;
   height?: number;
-  fit: "scale-down" | "cover";
+  fit?: "scale-down" | "cover";
   /** Concrete output MIME type after negotiation. */
   mime: string;
   quality: number;
@@ -79,7 +80,7 @@ export function parseTransform(params: URLSearchParams, accept: string | null, s
   if (v !== null && w !== null) return { ok: false, error: "use either v or w, not both" };
   if (v === null && w === null && f === null) return { ok: true, spec: null };
 
-  let base: { width: number; height?: number; fit: "scale-down" | "cover" };
+  let base: { width?: number; height?: number; fit?: "scale-down" | "cover" };
   let name: string;
   if (v !== null) {
     if (!Object.hasOwn(VARIANTS, v)) {
@@ -95,8 +96,8 @@ export function parseTransform(params: URLSearchParams, accept: string | null, s
     base = { width: n, fit: "scale-down" };
     name = `w${n}`;
   } else {
-    // Format change only: keep the pixel size, do not upscale.
-    base = { width: WIDTH_LADDER[WIDTH_LADDER.length - 1], fit: "scale-down" };
+    // Format change only: no resize at all, so the output keeps the original pixel size.
+    base = {};
     name = "orig";
   }
 
@@ -118,10 +119,13 @@ export function parseTransform(params: URLSearchParams, accept: string | null, s
 
 export function negotiate(accept: string | null, source: ImageKind): string {
   const a = (accept ?? "").toLowerCase();
+  // Animated sources: Images keeps animation for WebP and GIF output (anim defaults to true),
+  // but AVIF/PNG/JPEG output is a still. Never pick a still format for a GIF on our own.
+  if (source === "gif") return a.includes("image/webp") ? MIME.webp : MIME.gif;
   if (a.includes("image/avif")) return MIME.avif;
   if (a.includes("image/webp")) return MIME.webp;
   // Browsers without webp/avif support: keep a universally supported type.
-  return source === "png" || source === "gif" ? MIME.png : MIME.jpeg;
+  return source === "png" ? MIME.png : MIME.jpeg;
 }
 
 // ---- Auth and hashing -------------------------------------------------------
@@ -160,4 +164,42 @@ export function safeName(name: string | null | undefined): string {
   const base = name.split(/[\\/]/).pop() ?? "";
   // eslint-disable-next-line no-control-regex
   return base.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 120);
+}
+
+/** RFC 9110 If-None-Match: `*`, a comma-separated list, and weak (`W/`) tags all count. */
+export function etagMatches(header: string | null, etag: string): boolean {
+  if (!header) return false;
+  const want = etag.replace(/^W\//, "");
+  return header.split(",").some((raw) => {
+    const t = raw.trim();
+    return t === "*" || t.replace(/^W\//, "") === want;
+  });
+}
+
+/**
+ * Read a request body but stop as soon as `limit` bytes are exceeded, so an oversized chunked
+ * upload is never fully buffered. Returns null when the limit is exceeded.
+ */
+export async function readLimited(body: ReadableStream<Uint8Array> | null, limit: number): Promise<Uint8Array | null> {
+  if (!body) return new Uint8Array();
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  return out;
 }

@@ -9,17 +9,33 @@ yendra-c.com.                      3600 IN MX  1 smtp.google.com.
 yendra-c.com.                      3600 IN TXT "v=spf1 include:_spf.google.com ~all"
 google._domainkey.yendra-c.com.    3600 IN TXT "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuetKV6WQqgFTCOIdXYpGstiBAYKGuqT74vuhKI5EkR9WzIfUKrBqH2kRcmJARObvGJ4JXAexdNy+FeUR5iD/nNBVoS+CMCYM/Bphv/u7xuUSbYzvxy0eP/FcvhBzHBYrKzpVQXGpMWYGM2xliV9ZCJ46n9jPZLFxZ6O4Lqn5SEUe715kgrUfbIfkicg3EQSkd" "sCV+MwOM2MRLm8FpRAQSUjP9Sxpg+WN0k/5DttUpYabk6RM6FVt5XCqW4EYLsYWypFDXzNyts3K2z+o+wLz3ZNJy8mgk8rfd6jPYhSEYYOQPWADQ481UlFZ4UbbOkLkz9e7wxYRnt11C3WbFqJfXQIDAQAB"
 ;
-; ADD [PROPOSAL]: a DMARC policy. None is published today. p=none only
-; reports; it changes no delivery. Tighten to quarantine after a few weeks
-; of clean reports.
+; ADD [PROPOSAL]: a DMARC policy. None is published today. p=none changes no
+; delivery, but it also sends NO reports: reports only arrive if a rua= address
+; is added. Add rua=mailto:<monitored address> [TO BE CONFIRMED] before waiting
+; for "clean reports", then tighten to quarantine. NOTE: the pending Cloudflare
+; zone already has a _dmarc TXT (p=none, reporting to Cloudflare's DMARC
+; aggregator) per the dashboard assistant, 27 Nov 2026 [NOT VERIFIED by me]. If
+; one exists, skip the line below to avoid a duplicate.
 _dmarc.yendra-c.com.               3600 IN TXT "v=DMARC1; p=none"
 ;
-; WEBSITE: do NOT import the Squarespace records below. The site moves to
-; the Cloudflare Pages project `yendra-website`. Its records are created by
-; Pages > yendra-website > Custom domains > add yendra-c.com and
-; www.yendra-c.com, once that project exists in this account.
-;   (old) yendra-c.com.      A     198.49.23.144 / .145, 198.185.159.144 / .145
-;   (old) www.yendra-c.com.  CNAME ext-sq.squarespace.com.
+; WEBSITE: the site moves to the Cloudflare Pages project `yendra-website`, but
+; its records only exist after Pages > yendra-website > Custom domains > add
+; yendra-c.com and www.yendra-c.com. If the nameservers move BEFORE that, apex
+; and www have no records and the site is down. Cutover order:
+;   1. Squarespace: turn DNSSEC off, wait at least 24 hours (DS TTL).
+;   2. Keep the parking records in the zone, DNS-ONLY (grey cloud, NOT proxied),
+;      until Pages is attached. They are listed below; uncomment to import, then
+;      check the grey cloud in the dashboard after import.
+;   3. Squarespace: set the nameservers to the pair Cloudflare assigned (per the
+;      dashboard assistant, 27 Nov 2026: junade.ns.cloudflare.com and
+;      zainab.ns.cloudflare.com [TO BE CONFIRMED on the zone Overview page]).
+;   4. When the zone is Active: attach the Pages custom domains, then delete the
+;      parking records below.
+;yendra-c.com.      3600 IN A     198.49.23.144
+;yendra-c.com.      3600 IN A     198.49.23.145
+;yendra-c.com.      3600 IN A     198.185.159.144
+;yendra-c.com.      3600 IN A     198.185.159.145
+;www.yendra-c.com.  3600 IN CNAME ext-sq.squarespace.com.
 ;
 ; DROP: Squarespace-only record, meaningless off Squarespace.
 ;   (old) _domainconnect.yendra-c.com. CNAME _domainconnect.domains.squarespace.com.

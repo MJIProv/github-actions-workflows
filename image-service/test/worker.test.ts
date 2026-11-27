@@ -97,6 +97,17 @@ function makeEnv(overrides: Partial<Env> = {}) {
 }
 
 const auth = { authorization: `Bearer ${TOKEN}` };
+const countingStream = (chunkSize: number, chunks: number) => {
+  let sent = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(c) {
+      if (sent >= chunks) return c.close();
+      sent++;
+      c.enqueue(new Uint8Array(chunkSize).fill(1));
+    },
+  });
+  return { stream, sent: () => sent };
+};
 const call = (env: Env, path: string, init?: RequestInit) => worker.fetch(new Request(BASE + path, init), env);
 const rawUpload = (env: Env, body: BodyInit, headers: Record<string, string> = {}) =>
   call(env, "/upload", { method: "POST", body, headers: { ...auth, "content-type": "image/png", ...headers } });
@@ -145,16 +156,28 @@ test("uploading identical bytes twice dedupes and does not write again", async (
   assert.equal(calls.put, 1);
 });
 
+// Real clients send Content-Length for multipart; a bare Request(FormData) in a test does not.
+async function multipartUpload(env: Env, fd: FormData) {
+  const enc = new Response(fd);
+  const ct = enc.headers.get("content-type")!;
+  const buf = new Uint8Array(await enc.arrayBuffer());
+  return call(env, "/upload", {
+    method: "POST",
+    body: buf,
+    headers: { ...auth, "content-type": ct, "content-length": String(buf.length) },
+  });
+}
+
 test("upload accepts multipart/form-data with a 'file' field", async () => {
   const { env } = makeEnv();
   const fd = new FormData();
   fd.set("file", new File([pngBytes()], "photo.png", { type: "image/png" }));
-  const r = await call(env, "/upload", { method: "POST", body: fd, headers: auth });
+  const r = await multipartUpload(env, fd);
   assert.equal(r.status, 201);
   assert.equal(((await r.json()) as any).kind, "png");
   const missing = new FormData();
   missing.set("other", "x");
-  assert.equal((await call(env, "/upload", { method: "POST", body: missing, headers: auth })).status, 400);
+  assert.equal((await multipartUpload(env, missing)).status, 400);
 });
 
 test("upload rejects SVG, HTML, empty, oversize and undecodable bodies", async () => {
@@ -246,4 +269,84 @@ test("health, wrong methods and unknown routes", async () => {
   assert.equal((await call(env, "/upload")).status, 405);
   assert.equal((await call(env, `/i/${"a".repeat(64)}`, { method: "POST" })).status, 405);
   assert.equal((await call(env, "/nope")).status, 404);
+});
+
+test("Range on an original is ignored with a full 200 (no broken 206)", async () => {
+  const { env } = makeEnv();
+  const bytes = pngBytes();
+  const { id }: any = await (await rawUpload(env, bytes)).json();
+  for (const range of ["bytes=0-9", "bytes=abc", "bytes=999999-"]) {
+    const r = await call(env, `/i/${id}`, { headers: { range } });
+    assert.equal(r.status, 200, range);
+    assert.equal(r.headers.get("content-range"), null);
+    assert.equal((await r.arrayBuffer()).byteLength, bytes.length);
+  }
+});
+
+test("HEAD never runs a transformation or reads the object body", async () => {
+  const { env, calls } = makeEnv();
+  const bytes = pngBytes();
+  const { id }: any = await (await rawUpload(env, bytes)).json();
+  const orig = await call(env, `/i/${id}`, { method: "HEAD" });
+  assert.equal(orig.status, 200);
+  assert.equal(orig.headers.get("content-type"), "image/png");
+  assert.equal(orig.headers.get("content-length"), String(bytes.length));
+  assert.equal((await orig.arrayBuffer()).byteLength, 0);
+  const t = await call(env, `/i/${id}?v=hero&f=webp`, { method: "HEAD" });
+  assert.equal(t.status, 200);
+  assert.equal(t.headers.get("content-type"), "image/webp");
+  assert.equal(calls.transforms.length, 0);
+  assert.equal(calls.outputs.length, 0);
+});
+
+test("If-None-Match: weak tag, list and * all produce 304", async () => {
+  const { env } = makeEnv();
+  const { id }: any = await (await rawUpload(env, pngBytes())).json();
+  const etag = (await call(env, `/i/${id}`)).headers.get("etag")!;
+  for (const inm of [etag, `W/${etag}`, `"nope", ${etag}`, "*"]) {
+    assert.equal((await call(env, `/i/${id}`, { headers: { "if-none-match": inm } })).status, 304, inm);
+  }
+  assert.equal((await call(env, `/i/${id}`, { headers: { "if-none-match": '"nope"' } })).status, 200);
+});
+
+test("format-only request does not resize: no transform() call, output format applied", async () => {
+  const { env, calls } = makeEnv();
+  const { id }: any = await (await rawUpload(env, pngBytes())).json();
+  const r = await call(env, `/i/${id}?f=webp`);
+  assert.equal(r.status, 200);
+  assert.equal(calls.transforms.length, 0, "no width or height was applied");
+  assert.deepEqual(calls.outputs[0], { format: "image/webp", quality: 80 });
+});
+
+test("a chunked upload over the limit is rejected after reading only a little of it", async () => {
+  const { env } = makeEnv({ MAX_UPLOAD_BYTES: "1000" });
+  const c = countingStream(500, 400); // would be 200 kB if fully read
+  const r = await call(env, "/upload", {
+    method: "POST",
+    body: c.stream,
+    headers: { ...auth, "content-type": "image/png" },
+    // @ts-expect-error Node's fetch needs duplex for a streaming body
+    duplex: "half",
+  });
+  assert.equal(r.status, 413);
+  assert.ok(c.sent() < 50, `read ${c.sent()} of 400 chunks`);
+});
+
+test("multipart without a Content-Length is refused (it would be fully buffered)", async () => {
+  const { env } = makeEnv();
+  const boundary = "----b";
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(new TextEncoder().encode(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.png"\r\n\r\nxx\r\n--${boundary}--\r\n`));
+      c.close();
+    },
+  });
+  const r = await call(env, "/upload", {
+    method: "POST",
+    body,
+    headers: { ...auth, "content-type": `multipart/form-data; boundary=${boundary}` },
+    // @ts-expect-error Node's fetch needs duplex for a streaming body
+    duplex: "half",
+  });
+  assert.equal(r.status, 411);
 });

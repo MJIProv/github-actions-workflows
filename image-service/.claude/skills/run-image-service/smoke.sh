@@ -15,11 +15,11 @@ fail=0
 unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
 export NO_PROXY=localhost,127.0.0.1
 
+STATE=$(mktemp -d /tmp/image-service-state.XXXXXX)   # isolated local R2 state; never touches .wrangler/
 cleanup() {
   # wrangler spawns node + workerd children; npx does not forward signals, so kill the whole group
   [ -n "${WPID:-}" ] && kill -- -"$WPID" 2>/dev/null
-  rm -f .dev.vars
-  rm -rf .wrangler
+  rm -rf "$STATE"
 }
 trap cleanup EXIT
 
@@ -40,9 +40,8 @@ writeFileSync('$PNG',Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0
 "
 
 TOKEN=$(openssl rand -hex 32)               # must be >= 32 chars or writes return 503
-printf 'UPLOAD_TOKEN=%s\n' "$TOKEN" > .dev.vars
-
-setsid npx wrangler dev --local --port "$PORT" > "$LOG" 2>&1 &
+# --var and --persist-to keep this run away from a developer's own .dev.vars and .wrangler/ state
+setsid npx wrangler dev --local --port "$PORT" --var "UPLOAD_TOKEN:$TOKEN" --persist-to "$STATE" > "$LOG" 2>&1 &
 WPID=$!                                    # setsid makes this the process-group leader
 for _ in $(seq 1 90); do
   curl -sf "$BASE/health" > /dev/null 2>&1 && break
@@ -77,6 +76,15 @@ check "unquantised width -> 400" 400 "$(curl -s -o /dev/null -w '%{http_code}' "
 check "SVG upload -> 415" 415 "$(curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary '<svg xmlns="http://www.w3.org/2000/svg"/>' "${AUTH[@]}" -H 'content-type: image/svg+xml' $BASE/upload)"
 check "meta without token -> 401" 401 "$(curl -s -o /dev/null -w '%{http_code}' $BASE/meta/$ID)"
 check "meta with token -> 200" 200 "$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" $BASE/meta/$ID)"
+FO=$(curl -s -o /tmp/image-service-fmt.webp -w '%{http_code} %{content_type}' "$BASE/i/$ID?f=webp")
+check "?f=webp (format only) -> image/webp" "200 image/webp" "$FO"
+if command -v file >/dev/null; then
+  check "format-only keeps 640x480 (no resize)" "640x480" "$(file /tmp/image-service-fmt.webp | grep -oE '[0-9]+x[0-9]+' | head -1)"
+fi
+check "Range header is ignored with a full 200" "200 none" "$(curl -s -o /dev/null -w '%{http_code}' -H 'range: bytes=0-9' $BASE/i/$ID) $(curl -sI -H 'range: bytes=0-9' $BASE/i/$ID | grep -ci '^content-range' | sed 's/^0$/none/')"
+check "HEAD on a transform has no body" "200 0" "$(curl -sI "$BASE/i/$ID?v=hero&f=webp" -o /dev/null -w '%{http_code}') $(curl -s -I "$BASE/i/$ID?v=hero&f=webp" | wc -c | awk '{print ($1>0)?0:1}')"
+ET=$(curl -sI $BASE/i/$ID | tr -d '\r' | awk -F': ' 'tolower($1)=="etag"{print $2}')
+check "weak ETag in a list -> 304" 304 "$(curl -s -o /dev/null -w '%{http_code}' -H "if-none-match: \"nope\", W/$ET" $BASE/i/$ID)"
 check "delete -> 200" 200 "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "${AUTH[@]}" $BASE/i/$ID)"
 check "GET after delete -> 404" 404 "$(curl -s -o /dev/null -w '%{http_code}' $BASE/i/$ID)"
 

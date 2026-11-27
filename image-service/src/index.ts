@@ -2,7 +2,9 @@ import {
   ID_RE,
   MIME,
   bearer,
+  etagMatches,
   parseTransform,
+  readLimited,
   safeEqual,
   safeName,
   sha256Hex,
@@ -58,7 +60,8 @@ async function upload(request: Request, env: Env): Promise<Response> {
   if (denied) return denied;
 
   const limit = maxBytes(env);
-  const declared = Number(request.headers.get("content-length"));
+  const declaredRaw = request.headers.get("content-length");
+  const declared = declaredRaw === null ? NaN : Number(declaredRaw);
   if (Number.isFinite(declared) && declared > limit + 4096) return err(413, `file exceeds ${limit} bytes`);
 
   let bytes: Uint8Array;
@@ -66,6 +69,8 @@ async function upload(request: Request, env: Env): Promise<Response> {
   const ctype = request.headers.get("content-type") ?? "";
   try {
     if (ctype.toLowerCase().startsWith("multipart/form-data")) {
+      // formData() buffers the whole body, so only accept it with a declared, bounded length.
+      if (!Number.isFinite(declared)) return err(411, "multipart uploads need a Content-Length");
       const file = (await request.formData()).get("file");
       if (!file || typeof file === "string") return err(400, 'multipart field "file" is required');
       name = safeName((file as File).name);
@@ -73,7 +78,10 @@ async function upload(request: Request, env: Env): Promise<Response> {
       bytes = new Uint8Array(await (file as File).arrayBuffer());
     } else {
       name = safeName(request.headers.get("x-filename"));
-      bytes = new Uint8Array(await request.arrayBuffer());
+      // Stream with a counter: a chunked body over the limit is cancelled, never fully buffered.
+      const read = await readLimited(request.body, limit);
+      if (read === null) return err(413, `file exceeds ${limit} bytes`);
+      bytes = read;
     }
   } catch {
     return err(400, "could not read request body");
@@ -135,31 +143,47 @@ async function serve(request: Request, env: Env, id: string): Promise<Response> 
   };
   const etag = `"${id.slice(0, 32)}-${spec ? spec.tag : "orig"}"`;
   common.etag = etag;
+  // Workers Caching honors Vary (one cached variant per verbatim Accept value, per Cloudflare docs).
+  // Keep any other cache in front of this Worker configured to vary on Accept too.
   if (spec?.varyAccept) common.vary = "Accept";
 
-  if (request.headers.get("if-none-match") === etag) {
+  if (etagMatches(request.headers.get("if-none-match"), etag)) {
     return new Response(null, { status: 304, headers: common });
+  }
+
+  // HEAD: answer from metadata only. Never run a (billable) transformation for a body nobody reads.
+  if (request.method === "HEAD") {
+    const headers = new Headers(common);
+    headers.set("content-type", spec ? spec.mime : (head.httpMetadata?.contentType ?? MIME[kind]));
+    if (!spec) headers.set("content-length", String(head.size));
+    return new Response(null, { status: 200, headers });
   }
 
   // Untransformed: stream the stored bytes. No Images call, so no transformation billing.
   if (!spec) {
-    const obj = await env.BUCKET.get(origKey(id), { range: request.headers });
+    // Range is deliberately not supported: images are small (<= MAX_UPLOAD_BYTES) and a Range header
+    // is ignored with a full 200, which RFC 9110 allows. No half-implemented 206.
+    const obj = await env.BUCKET.get(origKey(id));
     if (!obj) return err(404, "not found");
     const headers = new Headers(common);
     obj.writeHttpMetadata(headers);
     headers.set("cache-control", common["cache-control"]);
     headers.set("etag", etag);
-    return new Response(obj.body, { status: request.headers.has("range") ? 206 : 200, headers });
+    return new Response(obj.body, { status: 200, headers });
   }
 
   const obj = await env.BUCKET.get(origKey(id));
   if (!obj) return err(404, "not found");
   try {
-    const transformed = env.IMAGES.input(obj.body).transform({
-      width: spec.width,
-      ...(spec.height ? { height: spec.height } : {}),
-      fit: spec.fit,
-    });
+    let transformed = env.IMAGES.input(obj.body);
+    // A format-only request has no width/height: skip transform() so the pixel size is untouched.
+    if (spec.width !== undefined || spec.height !== undefined) {
+      transformed = transformed.transform({
+        ...(spec.width !== undefined ? { width: spec.width } : {}),
+        ...(spec.height !== undefined ? { height: spec.height } : {}),
+        ...(spec.fit ? { fit: spec.fit } : {}),
+      });
+    }
     const out = await transformed.output({ format: spec.mime as ImageOutputOptions["format"], quality: spec.quality });
     return out.response({ headers: common });
   } catch (e) {

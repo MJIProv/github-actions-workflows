@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bearer, negotiate, parseTransform, safeEqual, safeName, sha256Hex, sniffImage } from "../src/lib.ts";
+import { bearer, etagMatches, negotiate, parseTransform, readLimited, safeEqual, safeName, sha256Hex, sniffImage } from "../src/lib.ts";
 
 const bytes = (...n: number[]) => Uint8Array.from(n);
 const ascii = (s: string) => Array.from(s, (c) => c.charCodeAt(0));
@@ -55,10 +55,12 @@ test("parseTransform: rejects unknown params, bad variant, bad format, v+w toget
   assert.equal(parseTransform(new URLSearchParams("v=card&w=800"), null, "png").ok, false);
 });
 
-test("parseTransform: format-only request keeps size and does not upscale", () => {
+test("parseTransform: format-only request has no width, so the pixel size is untouched", () => {
   const r = parseTransform(new URLSearchParams("f=avif"), null, "png");
   assert.ok(r.ok && r.spec);
-  assert.equal(r.spec.fit, "scale-down");
+  assert.equal(r.spec.width, undefined);
+  assert.equal(r.spec.height, undefined);
+  assert.equal(r.spec.fit, undefined);
   assert.equal(r.spec.mime, "image/avif");
   assert.equal(r.spec.quality, 60);
 });
@@ -68,7 +70,56 @@ test("negotiate: avif beats webp beats legacy fallback", () => {
   assert.equal(negotiate("image/webp,*/*", "jpeg"), "image/webp");
   assert.equal(negotiate("*/*", "jpeg"), "image/jpeg");
   assert.equal(negotiate(null, "png"), "image/png");
-  assert.equal(negotiate("text/html", "gif"), "image/png");
+  assert.equal(negotiate("text/html", "png"), "image/png");
+});
+
+test("negotiate: a GIF is never turned into a still format on its own", () => {
+  assert.equal(negotiate("image/avif,image/webp,*/*", "gif"), "image/webp"); // animated WebP
+  assert.equal(negotiate("image/webp,*/*", "gif"), "image/webp");
+  assert.equal(negotiate("image/avif,*/*", "gif"), "image/gif"); // AVIF would flatten it
+  assert.equal(negotiate("*/*", "gif"), "image/gif");
+  assert.equal(negotiate(null, "gif"), "image/gif");
+});
+
+test("parseTransform: f=gif is an allowed explicit output format", () => {
+  const r = parseTransform(new URLSearchParams("v=card&f=gif"), null, "gif");
+  assert.ok(r.ok && r.spec && r.spec.mime === "image/gif");
+});
+
+test("etagMatches: exact, weak, list and star forms", () => {
+  const t = '"abc-card.webp"';
+  assert.equal(etagMatches(t, t), true);
+  assert.equal(etagMatches('W/"abc-card.webp"', t), true);
+  assert.equal(etagMatches('"zzz", W/"abc-card.webp"', t), true);
+  assert.equal(etagMatches("*", t), true);
+  assert.equal(etagMatches('"other"', t), false);
+  assert.equal(etagMatches(null, t), false);
+  assert.equal(etagMatches("", t), false);
+});
+
+test("readLimited: returns the bytes when under the limit and null (cancelling) when over", async () => {
+  const mk = (sizes: number[]) => {
+    let i = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (i >= sizes.length) return c.close();
+        c.enqueue(new Uint8Array(sizes[i++]).fill(7));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    return { stream, wasCancelled: () => cancelled, pulled: () => i };
+  };
+  const ok = mk([10, 20]);
+  const out = await readLimited(ok.stream, 100);
+  assert.equal(out?.length, 30);
+  const big = mk([40, 40, 40, 40, 40]);
+  assert.equal(await readLimited(big.stream, 100), null);
+  assert.equal(big.wasCancelled(), true);
+  assert.ok(big.pulled() < 5, "stopped reading before consuming the whole stream");
+  assert.equal((await readLimited(null, 10))?.length, 0);
 });
 
 test("sha256Hex matches the published test vector for 'abc'", async () => {
