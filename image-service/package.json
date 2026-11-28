@@ -1,0 +1,19 @@
+{
+  "name": "image-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Image upload and transformation service on Cloudflare Workers, R2 and the Images binding.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "dev": "wrangler dev",
+    "check:bundle": "wrangler deploy --dry-run --outdir dist",
+    "check": "npm run typecheck && npm test && npm run check:bundle"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261127.1",
+    "typescript": "7.0.2",
+    "wrangler": "4.169.0"
+  }
+}

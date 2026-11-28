@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "image-service",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "observability": { "enabled": true },
+
+  // R2 bucket for original uploads. Create it first: npx wrangler r2 bucket create image-service-originals
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "image-service-originals" }],
+
+  // Cloudflare Images binding (transform on read). Billed per unique transformation.
+  "images": { "binding": "IMAGES" },
+
+  // Repeat requests are served from cache without re-running the Worker or re-transforming.
+  "cache": { "enabled": true },
+
+  "vars": {
+    "MAX_UPLOAD_BYTES": "10485760",
+    "CACHE_SECONDS": "86400"
+  }
+
+  // No account_id here on purpose. Deploy while logged in to the intended Cloudflare account.
+  // Secret (never in this file): npx wrangler secret put UPLOAD_TOKEN   (min 32 characters)
+}
