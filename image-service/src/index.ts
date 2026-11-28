@@ -3,6 +3,7 @@ import {
   MIME,
   bearer,
   etagMatches,
+  fallbackMimes,
   parseTransform,
   readLimited,
   safeEqual,
@@ -128,13 +129,16 @@ async function serve(request: Request, env: Env, id: string): Promise<Response> 
   const head = await env.BUCKET.head(origKey(id));
   if (!head) return err(404, "not found");
   const kind = (head.customMetadata?.kind ?? "") as keyof typeof MIME;
-  if (!(kind in MIME)) return err(500, "stored object has no known type");
+  // hasOwn, not `in`: `in` would accept "constructor", "toString" and other prototype names.
+  if (!Object.hasOwn(MIME, kind)) return err(500, "stored object has no known type");
 
   const parsed = parseTransform(new URL(request.url).searchParams, request.headers.get("accept"), kind);
   if (!parsed.ok) return err(400, parsed.error);
   const spec = parsed.spec;
 
-  const ttl = Math.max(60, Math.min(Number(env.CACHE_SECONDS) || 86400, 31536000));
+  // Unset or non-numeric -> one day. A real 0 is honoured and clamped up to the 60 s minimum.
+  const rawTtl = env.CACHE_SECONDS === undefined || env.CACHE_SECONDS.trim() === "" ? NaN : Number(env.CACHE_SECONDS);
+  const ttl = Math.max(60, Math.min(Number.isFinite(rawTtl) ? Math.trunc(rawTtl) : 86400, 31536000));
   const common: Record<string, string> = {
     "cache-control": `public, max-age=${ttl}`,
     "x-content-type-options": "nosniff",
@@ -172,24 +176,35 @@ async function serve(request: Request, env: Env, id: string): Promise<Response> 
     return new Response(obj.body, { status: 200, headers });
   }
 
-  const obj = await env.BUCKET.get(origKey(id));
-  if (!obj) return err(404, "not found");
-  try {
-    let transformed = env.IMAGES.input(obj.body);
-    // A format-only request has no width/height: skip transform() so the pixel size is untouched.
-    if (spec.width !== undefined || spec.height !== undefined) {
-      transformed = transformed.transform({
-        ...(spec.width !== undefined ? { width: spec.width } : {}),
-        ...(spec.height !== undefined ? { height: spec.height } : {}),
-        ...(spec.fit ? { fit: spec.fit } : {}),
-      });
+  // f=auto may fall back (AVIF -> WebP -> PNG/JPEG) if the negotiated format fails, for example if AVIF is
+  // refused for a large output. An explicit f never falls back: the caller asked for exactly that format.
+  const attempts = [
+    { mime: spec.mime, quality: spec.quality },
+    ...(spec.varyAccept ? fallbackMimes(spec.mime, request.headers.get("accept"), kind).map((mime) => ({ mime, quality: 80 })) : []),
+  ];
+  const baseName = spec.tag.split(".")[0];
+  for (const [i, attempt] of attempts.entries()) {
+    const obj = await env.BUCKET.get(origKey(id));
+    if (!obj) return err(404, "not found");
+    try {
+      let transformed = env.IMAGES.input(obj.body);
+      // A format-only request has no width/height: skip transform() so the pixel size is untouched.
+      if (spec.width !== undefined || spec.height !== undefined) {
+        transformed = transformed.transform({
+          ...(spec.width !== undefined ? { width: spec.width } : {}),
+          ...(spec.height !== undefined ? { height: spec.height } : {}),
+          ...(spec.fit ? { fit: spec.fit } : {}),
+        });
+      }
+      const out = await transformed.output({ format: attempt.mime as ImageOutputOptions["format"], quality: attempt.quality });
+      // The ETag names the format actually served, so a fallback never shares a tag with the format it replaced.
+      const headers = i === 0 ? common : { ...common, etag: `"${id.slice(0, 32)}-${baseName}.${attempt.mime.slice(6)}"` };
+      return out.response({ headers });
+    } catch (e) {
+      console.error("transform failed", spec.tag, attempt.mime, e instanceof Error ? e.message : String(e));
     }
-    const out = await transformed.output({ format: spec.mime as ImageOutputOptions["format"], quality: spec.quality });
-    return out.response({ headers: common });
-  } catch (e) {
-    console.error("transform failed", spec.tag, e instanceof Error ? e.message : String(e));
-    return err(502, "transformation failed");
   }
+  return err(502, "transformation failed");
 }
 
 // ---- GET /meta/:id, DELETE /i/:id -------------------------------------------

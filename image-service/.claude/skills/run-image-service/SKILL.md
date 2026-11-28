@@ -41,8 +41,8 @@ It runs in about 3 seconds and prints 20 `PASS` lines then `ALL CHECKS PASSED`. 
 | SVG upload | 415 |
 | `/meta/:id` without / with token | 401 / 200 |
 | `?f=webp` (format only) | `image/webp`, still 640x480 |
-| `Range` header on the original | full 200, no `Content-Range` |
-| `HEAD` on a transform | 200, empty body |
+| `Range` header on a GET of the original | full 200, no `Content-Range` |
+| `HEAD` on a transform | 200, `image/webp`, 0 body bytes. That no transformation runs is proven by `npm test`, not by this script |
 | weak ETag inside an `If-None-Match` list | 304 |
 | `DELETE /i/:id`, then `GET` | 200, then 404 |
 
@@ -67,7 +67,7 @@ The handler is a plain `fetch(request, env)` export, so internals can be tested 
 npm test
 ```
 
-Expected: `# tests 34`, `# pass 34`, `# fail 0` in about half a second. Use this path for changes to routing, auth, validation or parameter parsing (`src/lib.ts`, `src/index.ts`).
+Expected: `# tests 43`, `# pass 43`, `# fail 0` in about half a second. Use this path for changes to routing, auth, validation or parameter parsing (`src/lib.ts`, `src/index.ts`).
 
 ## Build and static checks
 

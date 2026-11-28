@@ -8,7 +8,7 @@ Raw port-53 DNS is NOT used: some sandboxes intercept it and give false answers.
 Limits: behind a TLS-intercepting egress proxy the certificate seen here is the proxy's, so the
 script says so instead of judging it. Check the certificate in a browser or from an unproxied machine.
 """
-import hashlib, json, os, re, socket, ssl, sys, urllib.error, urllib.request
+import json, os, re, socket, ssl, sys, urllib.error, urllib.request
 
 DOMAIN = os.environ.get("VERIFY_DOMAIN", "yendra-c.com")
 PAGES = os.environ.get("VERIFY_PAGES", "yendra-website.pages.dev")   # the Pages project that should be serving the site
@@ -50,6 +50,18 @@ def title(body):
     m = re.search(rb"<title[^>]*>(.*?)</title>", body, re.I | re.S)
     return m.group(1).decode(errors="replace").strip() if m else ""
 
+def registrar_name(d):
+    """Cosmetic only: never let an odd RDAP vCard shape fail the run."""
+    try:
+        for e in d.get("entities", []):
+            if "registrar" in e.get("roles", []):
+                for prop in e["vcardArray"][1]:
+                    if prop[0] == "fn":
+                        return str(prop[3])
+    except (KeyError, IndexError, TypeError):
+        pass
+    return "?"
+
 print(f"== {DOMAIN} live check")
 
 # 1. Registry: registrar, nameservers, DS
@@ -63,9 +75,8 @@ try:
     if cf_ns:
         row("PASS" if set(ns) == expected else "INFO", "nameservers equal the pair reported for this zone", ", ".join(sorted(expected)))
     row("INFO", "registry DS records", f"{len(ds)} present" + (f" (key tags {[x.get('keyTag') for x in ds]})" if ds else ""))
-    regs = [e["vcardArray"][1][1][3] for e in d.get("entities", []) if "registrar" in e.get("roles", [])]
-    row("INFO", "registrar", ", ".join(regs))
-    row("INFO", "expires", next((e["eventDate"] for e in d.get("events", []) if e["eventAction"] == "expiration"), "?"))
+    row("INFO", "registrar", registrar_name(d))
+    row("INFO", "expires", next((e.get("eventDate", "?") for e in d.get("events", []) if e.get("eventAction") == "expiration"), "?"))
 except Exception as e:
     row("FAIL", "registry lookup", str(e)[:100]); ns, ds, cf_ns = [], [], False
 
@@ -106,15 +117,14 @@ except Exception as e:
 # 5. Website: apex and www over HTTPS, served by Cloudflare, same content as the Pages project
 sp, hp, bp, up = fetch(f"https://{PAGES}/")
 row("PASS" if sp == 200 else "FAIL", f"Pages project {PAGES} serves", f"HTTP {sp}, title '{title(bp)}'")
-pages_hash = hashlib.sha256(bp).hexdigest() if sp == 200 else None
+pages_title = title(bp) if sp == 200 else None   # titles, not bytes: Cloudflare may inject scripts or obfuscate mailto links on a proxied domain
 for host in (DOMAIN, f"www.{DOMAIN}"):
     s, h, b, u = fetch(f"https://{host}/")
     srv = h.get("server", h.get("Server", "?"))
     row("PASS" if s == 200 else "FAIL", f"https://{host} responds", f"HTTP {s}, server {srv}")
     row("PASS" if str(srv).lower() == "cloudflare" else "FAIL", f"https://{host} is served by Cloudflare", f"server: {srv}")
-    if s == 200 and pages_hash:
-        same = hashlib.sha256(b).hexdigest() == pages_hash
-        row("PASS" if same else "FAIL", f"https://{host} content matches the Pages deployment", f"title '{title(b)}'")
+    if s == 200 and pages_title:
+        row("PASS" if title(b) == pages_title else "FAIL", f"https://{host} is the same page as the Pages deployment (same <title>)", f"title '{title(b)}' vs '{pages_title}'")
     row("INFO", f"https://{host} final URL", u)
 s, h, _, _ = fetch(f"http://{DOMAIN}/", follow=False)
 row("PASS" if s in (301, 302, 307, 308) and str(h.get("Location", h.get("location", ""))).startswith("https://") else "INFO",
@@ -130,7 +140,9 @@ try:
         row("INFO", "TLS certificate", "not judged: this network intercepts TLS (issuer %s). Check it in a browser." % issuer)
     else:
         row("PASS", "TLS certificate valid for the name", f"issuer {issuer}, expires {cert['notAfter']}")
-except Exception as e:
+except ssl.SSLCertVerificationError as e:
+    row("FAIL", "TLS certificate", f"does not verify: {getattr(e, 'verify_message', None) or str(e)[:70]}")
+except Exception as e:   # network or proxy trouble: cannot judge, so say so rather than guess
     row("INFO", "TLS certificate", f"not checked ({str(e)[:70]})")
 
 print("\nRESULT:", "ALL CHECKS PASSED" if fails == 0 else f"{fails} CHECK(S) FAILED")

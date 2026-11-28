@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bearer, etagMatches, negotiate, parseTransform, readLimited, safeEqual, safeName, sha256Hex, sniffImage } from "../src/lib.ts";
+import { bearer, etagMatches, fallbackMimes, negotiate, parseTransform, readLimited, safeEqual, safeName, sha256Hex, sniffImage } from "../src/lib.ts";
 
 const bytes = (...n: number[]) => Uint8Array.from(n);
 const ascii = (s: string) => Array.from(s, (c) => c.charCodeAt(0));
@@ -146,4 +146,27 @@ test("safeName strips paths and control characters", () => {
   assert.equal(safeName("a\u0000b\nc.png"), "abc.png");
   assert.equal(safeName(null), "");
   assert.equal(safeName("x".repeat(500)).length, 120);
+});
+
+test("negotiate: q=0 means not acceptable; q-values are read, not substring-matched", () => {
+  assert.equal(negotiate("image/avif;q=0, image/webp", "png"), "image/webp");
+  assert.equal(negotiate("image/avif; q=0.0,image/webp;q=0", "jpeg"), "image/jpeg");
+  assert.equal(negotiate("image/avif;q=0.1", "png"), "image/avif");
+  assert.equal(negotiate("image/webp;q=0", "gif"), "image/gif");
+  assert.equal(negotiate("x-image/avif-ish", "png"), "image/png"); // no substring match
+});
+
+test("negotiate: without avif/webp support only a JPEG source becomes JPEG; alpha-capable sources stay lossless", () => {
+  assert.equal(negotiate("*/*", "jpeg"), "image/jpeg");
+  assert.equal(negotiate("*/*", "png"), "image/png");
+  assert.equal(negotiate("*/*", "webp"), "image/png");
+  assert.equal(negotiate("*/*", "avif"), "image/png");
+});
+
+test("fallbackMimes: avif -> webp (if accepted) -> legacy; webp -> legacy; explicit-style formats have none", () => {
+  assert.deepEqual(fallbackMimes("image/avif", "image/avif,image/webp", "png"), ["image/webp", "image/png"]);
+  assert.deepEqual(fallbackMimes("image/avif", "image/avif,image/webp;q=0", "jpeg"), ["image/jpeg"]);
+  assert.deepEqual(fallbackMimes("image/webp", "image/webp", "jpeg"), ["image/jpeg"]);
+  assert.deepEqual(fallbackMimes("image/webp", "image/webp", "gif"), ["image/gif"]);
+  assert.deepEqual(fallbackMimes("image/png", "image/webp", "png"), []);
 });

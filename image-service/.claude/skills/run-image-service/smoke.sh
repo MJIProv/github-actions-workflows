@@ -81,8 +81,12 @@ check "?f=webp (format only) -> image/webp" "200 image/webp" "$FO"
 if command -v file >/dev/null; then
   check "format-only keeps 640x480 (no resize)" "640x480" "$(file /tmp/image-service-fmt.webp | grep -oE '[0-9]+x[0-9]+' | head -1)"
 fi
-check "Range header is ignored with a full 200" "200 none" "$(curl -s -o /dev/null -w '%{http_code}' -H 'range: bytes=0-9' $BASE/i/$ID) $(curl -sI -H 'range: bytes=0-9' $BASE/i/$ID | grep -ci '^content-range' | sed 's/^0$/none/')"
-check "HEAD on a transform has no body" "200 0" "$(curl -sI "$BASE/i/$ID?v=hero&f=webp" -o /dev/null -w '%{http_code}') $(curl -s -I "$BASE/i/$ID?v=hero&f=webp" | wc -c | awk '{print ($1>0)?0:1}')"
+# Range: a real GET (not HEAD) with the header; the status and the absence of Content-Range come from the same response
+RH=$(curl -s -o /dev/null -D - -H 'range: bytes=0-9' $BASE/i/$ID | tr -d '\r')
+check "Range header is ignored with a full 200 (GET)" "200 none" "$(echo "$RH" | head -1 | awk '{print $2}') $(echo "$RH" | grep -ci '^content-range' | sed 's/^0$/none/')"
+# HEAD on a transform: answered from metadata, so 200 + the negotiated type + no body bytes, and no transformation is run
+HH=$(curl -s -I "$BASE/i/$ID?v=hero&f=webp" -w '\n%{http_code} %{size_download}' | tr -d '\r')
+check "HEAD on a transform -> 200, image/webp, 0 body bytes" "200 0 image/webp" "$(echo "$HH" | tail -1 | awk '{print $1" "$2}') $(echo "$HH" | awk -F': ' 'tolower($1)=="content-type"{print $2}')"
 ET=$(curl -sI $BASE/i/$ID | tr -d '\r' | awk -F': ' 'tolower($1)=="etag"{print $2}')
 check "weak ETag in a list -> 304" 304 "$(curl -s -o /dev/null -w '%{http_code}' -H "if-none-match: \"nope\", W/$ET" $BASE/i/$ID)"
 check "delete -> 200" 200 "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "${AUTH[@]}" $BASE/i/$ID)"

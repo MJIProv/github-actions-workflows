@@ -117,15 +117,39 @@ export function parseTransform(params: URLSearchParams, accept: string | null, s
   };
 }
 
+/** Media types an Accept header names with q > 0. `q=0` means "not acceptable". Wildcards are ignored on purpose. */
+export function acceptedTypes(accept: string | null): Set<string> {
+  const ok = new Set<string>();
+  for (const part of (accept ?? "").toLowerCase().split(",")) {
+    const [type, ...params] = part.split(";").map((s) => s.trim());
+    if (!type) continue;
+    const qParam = params.map((p) => /^q=(\d*\.?\d+)$/.exec(p)).find(Boolean);
+    const q = qParam ? Number(qParam[1]) : 1;
+    if (q > 0) ok.add(type);
+  }
+  return ok;
+}
+
+/** The type used when the client accepts neither AVIF nor WebP. Never flattens alpha or animation into a JPEG. */
+const legacyMime = (source: ImageKind) => (source === "jpeg" ? MIME.jpeg : source === "gif" ? MIME.gif : MIME.png);
+
 export function negotiate(accept: string | null, source: ImageKind): string {
-  const a = (accept ?? "").toLowerCase();
+  const a = acceptedTypes(accept);
   // Animated sources: Images keeps animation for WebP and GIF output (anim defaults to true),
   // but AVIF/PNG/JPEG output is a still. Never pick a still format for a GIF on our own.
-  if (source === "gif") return a.includes("image/webp") ? MIME.webp : MIME.gif;
-  if (a.includes("image/avif")) return MIME.avif;
-  if (a.includes("image/webp")) return MIME.webp;
-  // Browsers without webp/avif support: keep a universally supported type.
-  return source === "png" ? MIME.png : MIME.jpeg;
+  if (source === "gif") return a.has("image/webp") ? MIME.webp : MIME.gif;
+  if (a.has("image/avif")) return MIME.avif;
+  if (a.has("image/webp")) return MIME.webp;
+  return legacyMime(source);
+}
+
+/** Formats to try, in order, when the negotiated output fails. Only used for f=auto, never for an explicit f. */
+export function fallbackMimes(mime: string, accept: string | null, source: ImageKind): string[] {
+  const a = acceptedTypes(accept);
+  const legacy = legacyMime(source);
+  if (mime === MIME.avif) return [...(a.has("image/webp") ? [MIME.webp] : []), legacy];
+  if (mime === MIME.webp) return [legacy];
+  return [];
 }
 
 // ---- Auth and hashing -------------------------------------------------------

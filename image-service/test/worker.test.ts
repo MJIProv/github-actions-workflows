@@ -350,3 +350,77 @@ test("multipart without a Content-Length is refused (it would be fully buffered)
   });
   assert.equal(r.status, 411);
 });
+
+// Make the fake Images binding refuse one output format, as the real one may for AVIF above its size limit.
+function refuseFormat(env: Env, format: string) {
+  const original = (env.IMAGES as any).input.bind(env.IMAGES);
+  (env.IMAGES as any).input = (s: ReadableStream) => {
+    const h = original(s);
+    const out = h.output.bind(h);
+    h.output = async (o: any) => {
+      if (o.format === format) throw new Error(`${format} refused`);
+      return out(o);
+    };
+    return h;
+  };
+}
+
+test("f=auto falls back from AVIF to WebP when AVIF fails, and the ETag names the format served", async () => {
+  const { env, calls } = makeEnv();
+  const { id }: any = await (await rawUpload(env, pngBytes())).json();
+  refuseFormat(env, "image/avif");
+  const r = await call(env, `/i/${id}?v=hero`, { headers: { accept: "image/avif,image/webp,*/*" } });
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get("content-type"), "image/webp");
+  assert.match(r.headers.get("etag")!, /-hero\.webp"$/);
+  assert.equal(r.headers.get("vary"), "Accept");
+  assert.deepEqual(calls.outputs.map((o) => o.format), ["image/webp"]); // the refused AVIF attempt is not recorded by the fake
+});
+
+test("f=auto skips WebP in the fallback chain if the client refuses it", async () => {
+  const { env, calls } = makeEnv();
+  const { id }: any = await (await rawUpload(env, pngBytes())).json();
+  refuseFormat(env, "image/avif");
+  const r = await call(env, `/i/${id}?v=card`, { headers: { accept: "image/avif,image/webp;q=0" } });
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get("content-type"), "image/png");
+  assert.deepEqual(calls.outputs.map((o) => o.format), ["image/png"]);
+});
+
+test("an explicit f=avif never falls back: a failure is a 502", async () => {
+  const { env, calls } = makeEnv();
+  const { id }: any = await (await rawUpload(env, pngBytes())).json();
+  refuseFormat(env, "image/avif");
+  const r = await call(env, `/i/${id}?v=hero&f=avif`, { headers: { accept: "image/avif,image/webp" } });
+  assert.equal(r.status, 502);
+  assert.equal(calls.outputs.length, 0, "a fallback would have produced a recorded output");
+});
+
+test("when every fallback fails the answer is still a generic 502", async () => {
+  const { env } = makeEnv();
+  const { id }: any = await (await rawUpload(env, pngBytes())).json();
+  (env.IMAGES as any).input = () => {
+    throw new Error("down");
+  };
+  const r = await call(env, `/i/${id}?v=card`, { headers: { accept: "image/avif,image/webp" } });
+  assert.equal(r.status, 502);
+});
+
+test("CACHE_SECONDS: unset is one day, 0 is honoured and clamped to 60, junk is one day", async () => {
+  for (const [value, expected] of [[undefined, 86400], ["0", 60], ["30", 60], ["3600", 3600], ["abc", 86400], ["", 86400]] as const) {
+    const { env } = makeEnv(value === undefined ? {} : { CACHE_SECONDS: value });
+    const { id }: any = await (await rawUpload(env, pngBytes())).json();
+    const r = await call(env, `/i/${id}`);
+    assert.equal(r.headers.get("cache-control"), `public, max-age=${expected}`, `CACHE_SECONDS=${String(value)}`);
+  }
+});
+
+test("a stored kind that is a prototype property name is rejected, not trusted", async () => {
+  const { env, store } = makeEnv();
+  const { id }: any = await (await rawUpload(env, pngBytes())).json();
+  for (const bad of ["constructor", "toString", "__proto__"]) {
+    store.get(`orig/${id}`)!.customMetadata.kind = bad;
+    const r = await call(env, `/i/${id}`);
+    assert.equal(r.status, 500, bad);
+  }
+});
