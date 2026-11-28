@@ -73,7 +73,7 @@ Expected: `# tests 34`, `# pass 34`, `# fail 0` in about half a second. Use this
 
 ```bash
 npm run typecheck        # tsc --noEmit, clean
-npm run check:bundle     # wrangler deploy --dry-run: "Total Upload: 11.62 KiB / gzip: 4.10 KiB"
+npm run check:bundle     # wrangler deploy --dry-run: "Total Upload: 13.12 KiB / gzip: 4.51 KiB"
 npm run check            # typecheck + tests + bundle, exits 0
 ```
 
@@ -91,6 +91,7 @@ npm run check            # typecheck + tests + bundle, exits 0
 ## Troubleshooting
 
 - **`wrangler` and `workerd` still running after a script run**: the cleanup killed only the `npx` wrapper (fixed in `smoke.sh`). If it happens after a manual start, find the PIDs with `ps -eo pid,stat,args | grep -E "[w]orkerd|[w]rangler dev"` and `kill` them. Defunct entries are zombies and need no action.
+- **A `wrangler dev` PID shows in `ps` right after `smoke.sh` exits**: the group kill is asynchronous, so the process can still be listed for a moment. Re-check a second later: in my re-run it was gone, the temp state dir was removed, and only `<defunct>` workerd zombies remained.
 - **`Proxy environment variables detected` warning from wrangler**: harmless in my runs.
 
 ## Not covered
