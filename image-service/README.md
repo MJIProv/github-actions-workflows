@@ -41,7 +41,7 @@ curl -X POST "$BASE/upload" -H "authorization: Bearer $TOKEN" \
 
 - `npm run typecheck`: clean (TypeScript 7.0.2).
 - `npm test`: 43 of 43 pass. They run the real handler against in-memory fakes of R2 and the Images binding. Reverting the source fixes (keeping the new tests) made 5 of them fail, and a deliberate break of the auth check earlier made one fail, so the suite does catch regressions.
-- `wrangler deploy --dry-run` (wrangler 4.169.0): bundles at 13.12 KiB (gzip 4.51 KiB); bindings `BUCKET`, `IMAGES` and both vars resolve; `cache.enabled` accepted.
+- `wrangler deploy --dry-run` (wrangler 4.169.0): bundles at 14.54 KiB (gzip 4.92 KiB); bindings `BUCKET`, `IMAGES` and both vars resolve; `cache.enabled` accepted.
 - `wrangler dev --local` end to end with a real 640x480 PNG: upload `201`, re-upload `existed:true`, original byte-identical, `?w=256&f=webp` gave a valid 256x192 WebP, `?v=thumb` gave 160x160, bad width `400`, SVG `415`, no token `401`, delete then `404`.
 
 ## Not verified

@@ -73,7 +73,7 @@ Expected: `# tests 43`, `# pass 43`, `# fail 0` in about half a second. Use this
 
 ```bash
 npm run typecheck        # tsc --noEmit, clean
-npm run check:bundle     # wrangler deploy --dry-run: "Total Upload: 13.12 KiB / gzip: 4.51 KiB"
+npm run check:bundle     # wrangler deploy --dry-run: "Total Upload: 14.54 KiB / gzip: 4.92 KiB"
 npm run check            # typecheck + tests + bundle, exits 0
 ```
 
